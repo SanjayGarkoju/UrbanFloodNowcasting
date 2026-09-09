@@ -1,0 +1,4 @@
+chennai-data/*.kmz
+chennai-data/*.kml
+__pycache__/
+*.pyc

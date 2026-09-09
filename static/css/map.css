@@ -1,0 +1,7 @@
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+#map{width:100vw;height:100vh}
+.maplibregl-canvas{outline:none}
+.maplibregl-ctrl-attrib{font-size:10px}
+input[type=range]{-webkit-appearance:none;height:4px;border-radius:999px;background:rgba(255,255,255,.12)}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:#0ea5e9;box-shadow:0 0 0 4px rgba(14,165,233,.15);cursor:pointer}
