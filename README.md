@@ -2,6 +2,18 @@
 
 Prototype Chennai urban-flood nowcasting layers.
 
+## Interactive Chennai map
+
+Run `python app.py`, then open `http://localhost:5000`. The browser model uses the repository's 800 manholes, 300 inlets, and 253 drain segments to provide:
+
+- one shared MapLibre map with flood-depth and drainage-graph overlays;
+- a synchronized 0–180 minute rainfall and hydraulic timeline;
+- capacity-based graph styling and node inflow/capacity popups;
+- flood-cell selection that highlights the associated upstream drain; and
+- button and swipe/drag controls with a CSS 3D view transition.
+
+The surface layer is a deterministic flood-depth proxy derived from the current drainage dataset and simulation. It is not a calibrated DEM result; replace its `depthCm` calculation when a DEM-based 2D surface model is available.
+
 ## Drainage graph layer
 
 The backend graph layer lives in `engine/drainage_graph.py`. It converts GCC/OpenCity ward-level stormwater-drain KML/KMZ files into a projected `networkx.DiGraph` for later coupling with a DEM-based 2D surface flow model and rainfall nowcasting grid.
@@ -50,5 +62,6 @@ ax.figure.savefig("graph-state.png", dpi=160)
 ```bash
 python -m pip install -r requirements.txt
 pytest
+node --test tests/test_frontend_model.js
 python app.py
 ```

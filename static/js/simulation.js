@@ -1,207 +1,238 @@
-// Simulation engine — Manning's Equation + Rational Method
-// Implements the hydrology pipeline described in the problem statement
-
 class FloodSimulator {
-  constructor() {
-    this.nodes = [];
-    this.network = [];
-    this.results = [];
+  constructor({ drains = [], manholes = [], inlets = [], rainfallProfile = [] } = {}) {
+    this.drains = drains;
+    this.nodes = [
+      ...manholes.map((node, index) => ({
+        ...node,
+        assetType: 'manhole',
+        elevation: node.elevation ?? 6 + this.hash(index + 31) * 4
+      })),
+      ...inlets.map((node, index) => ({
+        ...node,
+        assetType: 'inlet',
+        elevation: node.elevation ?? 6 + this.hash(index + 1301) * 4
+      }))
+    ];
+    this.rainfallProfile = rainfallProfile;
     this.params = {
-      rainfallIntensity: 50, // mm/hr
-      stormDuration: 60,     // minutes
-      catchmentArea: 10,     // hectares
-      runoffCoeff: 0.70,
-      timeStep: 1            // minutes
+      rainfallIntensity: 100,
+      stormDuration: 180,
+      runoffCoeff: 0.72,
+      timeStep: 5
     };
+    this.topology = this.buildTopology();
+    this.results = [];
   }
 
-  // Manning's equation: Q = (1/n) * A * R^(2/3) * S^(1/2)
-  // Returns capacity in m³/s
+  hash(seed) {
+    const value = Math.sin(seed * 127.1 + 311.7) * 43758.5453;
+    return value - Math.floor(value);
+  }
+
   manningCapacity(drain) {
-    const n = drain.n;                    // Manning's roughness
-    const w = drain.width;                // width (m)
-    const d = drain.depth;                // depth (m)
-    const S = drain.slope;                // slope
-    const A = w * d;                      // cross-section area (m²)
-    const P = w + 2 * d;                  // wetted perimeter (m)
-    const R = A / P;                      // hydraulic radius (m)
-    return (1 / n) * A * Math.pow(R, 2/3) * Math.pow(S, 0.5);
+    const width = Math.max(Number(drain.width) || 0.6, 0.1);
+    const depth = Math.max(Number(drain.depth) || 0.5, 0.1);
+    const slope = Math.max(Number(drain.slope) || 0.001, 0.00001);
+    const roughness = Math.max(Number(drain.n) || 0.015, 0.001);
+    const area = width * depth;
+    const hydraulicRadius = area / (width + 2 * depth);
+    return (1 / roughness) * area * Math.pow(hydraulicRadius, 2 / 3) * Math.sqrt(slope);
   }
 
-  // Rational Method: Q = C * i * A
-  // Q = peak flow (m³/s), C = runoff coefficient, i = intensity (m/s), A = area (m²)
-  rationalFlow(C, intensity_mm_hr, area_ha) {
-    const i = intensity_mm_hr / 1000 / 3600; // mm/hr → m/s
-    const A = area_ha * 10000;               // hectares → m²
-    return C * i * A;
+  rationalFlow(runoffCoeff, intensityMmHr, areaHa) {
+    const intensityMetresPerSecond = intensityMmHr / 1000 / 3600;
+    return runoffCoeff * intensityMetresPerSecond * areaHa * 10000;
   }
 
-  // Get rainfall intensity at time t from profile (interpolate)
-  getRainfallAt(t, duration) {
-    const maxT = RAINFALL_PROFILE[RAINFALL_PROFILE.length - 1].t;
-    const scale = duration / maxT;
-    const scaledT = t * scale;
+  nearestPointOnSegment(point, start, end) {
+    const latitudeScale = Math.cos((point[1] * Math.PI) / 180);
+    const dx = (end[0] - start[0]) * latitudeScale;
+    const dy = end[1] - start[1];
+    const lengthSquared = dx * dx + dy * dy;
+    if (lengthSquared === 0) {
+      return { coords: start, distanceSquared: Infinity };
+    }
+    const px = (point[0] - start[0]) * latitudeScale;
+    const py = point[1] - start[1];
+    const fraction = Math.max(0, Math.min(1, (px * dx + py * dy) / lengthSquared));
+    const coords = [
+      start[0] + (end[0] - start[0]) * fraction,
+      start[1] + (end[1] - start[1]) * fraction
+    ];
+    const offsetX = (point[0] - coords[0]) * latitudeScale;
+    const offsetY = point[1] - coords[1];
+    return { coords, distanceSquared: offsetX * offsetX + offsetY * offsetY };
+  }
 
-    for (let i = 0; i < RAINFALL_PROFILE.length - 1; i++) {
-      const p1 = RAINFALL_PROFILE[i];
-      const p2 = RAINFALL_PROFILE[i + 1];
-      if (scaledT >= p1.t && scaledT <= p2.t) {
-        const frac = (scaledT - p1.t) / (p2.t - p1.t);
-        return p1.intensity + frac * (p2.intensity - p1.intensity);
+  nearestDrain(point) {
+    let nearest = null;
+    this.drains.forEach((drain) => {
+      for (let index = 0; index < drain.coords.length - 1; index += 1) {
+        const candidate = this.nearestPointOnSegment(
+          point,
+          drain.coords[index],
+          drain.coords[index + 1]
+        );
+        if (!nearest || candidate.distanceSquared < nearest.distanceSquared) {
+          nearest = {
+            drainId: drain.id,
+            snapCoords: candidate.coords,
+            distanceSquared: candidate.distanceSquared
+          };
+        }
+      }
+    });
+    return nearest;
+  }
+
+  buildTopology() {
+    const drains = new Map();
+    this.drains.forEach((drain, index) => {
+      drains.set(drain.id, {
+        ...drain,
+        index,
+        capacity: this.manningCapacity(drain),
+        attachedNodeIds: []
+      });
+    });
+
+    const nodes = this.nodes.map((node, index) => {
+      const nearest = this.nearestDrain(node.coords);
+      const topologyNode = {
+        ...node,
+        index,
+        nearestDrainId: nearest?.drainId ?? null,
+        snapCoords: nearest?.snapCoords ?? node.coords,
+        catchmentAreaHa:
+          node.assetType === 'manhole'
+            ? 0.45 + this.hash(index + 701) * 0.5
+            : 0.25 + this.hash(index + 1701) * 0.4,
+        vulnerability: 0.72 + this.hash(index + 2701) * 0.62
+      };
+      if (nearest?.drainId) {
+        drains.get(nearest.drainId).attachedNodeIds.push(node.id);
+      }
+      return topologyNode;
+    });
+
+    return { nodes, drains };
+  }
+
+  getRainfallAt(timeMinutes, durationMinutes) {
+    if (!this.rainfallProfile.length) return 0;
+    const profileEnd = this.rainfallProfile[this.rainfallProfile.length - 1].t;
+    const scaledTime = (timeMinutes / durationMinutes) * profileEnd;
+    for (let index = 0; index < this.rainfallProfile.length - 1; index += 1) {
+      const start = this.rainfallProfile[index];
+      const end = this.rainfallProfile[index + 1];
+      if (scaledTime >= start.t && scaledTime <= end.t) {
+        const fraction = (scaledTime - start.t) / (end.t - start.t);
+        return start.intensity + fraction * (end.intensity - start.intensity);
       }
     }
-    return RAINFALL_PROFILE[RAINFALL_PROFILE.length - 1].intensity;
+    return this.rainfallProfile[this.rainfallProfile.length - 1].intensity;
   }
 
-  // Run full simulation — returns per-timestep results
-  runSimulation(params) {
+  statusFor(utilization) {
+    if (utilization >= 1) return 'surcharging';
+    if (utilization >= 0.7) return 'near_capacity';
+    return 'normal';
+  }
+
+  runSimulation(params = {}) {
     this.params = { ...this.params, ...params };
-    const { rainfallIntensity, stormDuration, catchmentArea, runoffCoeff, timeStep } = this.params;
+    const {
+      rainfallIntensity,
+      stormDuration,
+      runoffCoeff,
+      timeStep
+    } = this.params;
+    const profilePeak = Math.max(...this.rainfallProfile.map((point) => point.intensity), 1);
     this.results = [];
 
-    // Pre-compute capacity for each drain
-    const drainCapacities = {};
-    DRAINAGE_NETWORK.forEach(d => {
-      drainCapacities[d.id] = this.manningCapacity(d);
-    });
+    for (let time = 0; time <= stormDuration; time += timeStep) {
+      const profileRainfall = this.getRainfallAt(time, stormDuration);
+      const rainfall = profileRainfall * (rainfallIntensity / profilePeak);
+      const drainInflows = new Map(this.drains.map((drain) => [drain.id, 0]));
 
-    // Build node-to-drain connectivity
-    const nodeDrains = {};
-    JUNCTION_NODES.forEach(node => { nodeDrains[node.id] = []; });
-    DRAINAGE_NETWORK.forEach(drain => {
-      const start = drain.coords[0];
-      const end = drain.coords[drain.coords.length - 1];
-      JUNCTION_NODES.forEach(node => {
-        const d0 = Math.hypot(node.coords[0] - start[0], node.coords[1] - start[1]);
-        const d1 = Math.hypot(node.coords[0] - end[0], node.coords[1] - end[1]);
-        if (d0 < 0.005 || d1 < 0.005) {
-          nodeDrains[node.id].push(drain.id);
+      const nodes = this.topology.nodes.map((node) => {
+        const drain = this.topology.drains.get(node.nearestDrainId);
+        const accessibleCapacity = drain ? drain.capacity * 0.7 : 0;
+        const inflow = this.rationalFlow(
+          runoffCoeff,
+          rainfall,
+          node.catchmentAreaHa
+        ) * node.vulnerability;
+        const capacityUtilization =
+          accessibleCapacity > 0 ? Math.min(inflow / accessibleCapacity, 2.4) : 2.4;
+        const status = this.statusFor(capacityUtilization);
+        const depthCm = Math.min(
+          90,
+          Math.max(0, capacityUtilization - 0.56) * 54 * node.vulnerability
+        );
+        if (node.nearestDrainId) {
+          drainInflows.set(
+            node.nearestDrainId,
+            drainInflows.get(node.nearestDrainId) + inflow
+          );
         }
-      });
-    });
-
-    // Time-series simulation
-    for (let t = 0; t <= stormDuration; t += timeStep) {
-      const rainfall = this.getRainfallAt(t, stormDuration);
-      const scale = rainfall / 100; // scale to parameter intensity
-
-      // Total inflow via Rational Method
-      const totalFlow = this.rationalFlow(runoffCoeff, rainfall * (rainfallIntensity / 100), catchmentArea);
-
-      // Distribute flow across nodes (weighted by connectivity)
-      const nodeCount = JUNCTION_NODES.length;
-      const baseFlowPerNode = totalFlow / nodeCount;
-
-      // Per-node analysis
-      const nodeResults = JUNCTION_NODES.map((node, idx) => {
-        // Slight randomness to simulate real behavior
-        const hash = Math.sin(idx * 127.1 + t * 311.7) * 43758.5453;
-        const jitter = 1 + (hash - Math.floor(hash)) * 0.3 - 0.15;
-        const inflow = baseFlowPerNode * jitter;
-
-        // Find connected drains and check capacity
-        const connectedDrains = nodeDrains[node.id] || [];
-        let totalCapacity = 0;
-        const drainDetails = connectedDrains.map(did => {
-          const drain = DRAINAGE_NETWORK.find(d => d.id === did);
-          const cap = drainCapacities[did];
-          totalCapacity += cap;
-          return { id: did, capacity: cap, flow: 0, overflow: 0 };
-        });
-
-        // How much water enters each connected drain (proportional to capacity)
-        let totalAssigned = 0;
-        drainDetails.forEach(dd => {
-          dd.flow = totalCapacity > 0 ? (dd.capacity / totalCapacity) * inflow : 0;
-          dd.overflow = Math.max(0, dd.flow - dd.capacity);
-          totalAssigned += dd.flow;
-        });
-
-        const overflow = Math.max(0, inflow - totalCapacity);
-        const depthRatio = totalCapacity > 0 ? Math.min(inflow / totalCapacity, 2.0) : 0;
-        const overflowVolume = overflow * timeStep * 60; // m³
-
         return {
-          nodeId: node.id,
+          id: node.id,
           coords: node.coords,
+          snapCoords: node.snapCoords,
+          assetType: node.assetType,
           elevation: node.elevation,
-          inflow: inflow,
-          capacity: totalCapacity,
-          overflow: overflow,
-          overflowVolume: overflowVolume,
-          depthRatio: depthRatio,
-          isOverflowing: overflow > 0.001,
-          drains: drainDetails
+          upstreamDrainId: node.nearestDrainId,
+          inflow,
+          capacity: accessibleCapacity,
+          capacityUtilization,
+          status,
+          depthCm
         };
       });
 
-      // Drain segment analysis
-      const drainResults = DRAINAGE_NETWORK.map(drain => {
-        const cap = drainCapacities[drain.id];
-        const totalInflowToDrain = nodeResults
-          .filter(nr => (nodeDrains[nr.nodeId] || []).includes(drain.id))
-          .reduce((sum, nr) => {
-            const dd = nr.drains.find(d => d.id === drain.id);
-            return sum + (dd ? dd.flow : 0);
-          }, 0);
-
+      const drains = this.drains.map((drain, index) => {
+        const loadMultiplier = 4.5 + this.hash(index + 3701) * 5.5;
+        const flow = (drainInflows.get(drain.id) || 0) * loadMultiplier;
+        const capacity = this.topology.drains.get(drain.id).capacity;
+        const utilization = capacity > 0 ? Math.min(flow / capacity, 2.4) : 2.4;
         return {
-          drainId: drain.id,
+          id: drain.id,
           coords: drain.coords,
-          capacity: cap,
-          flow: totalInflowToDrain,
-          utilization: cap > 0 ? Math.min(totalInflowToDrain / cap, 2.0) : 0,
-          isOverflowing: totalInflowToDrain > cap,
           type: drain.type,
-          name: drain.name
+          capacity,
+          flow,
+          utilization,
+          status: this.statusFor(utilization)
         };
       });
 
-      // Overflow nodes for this timestep
-      const overflowNodes = nodeResults.filter(n => n.isOverflowing);
-      const totalOverflow = overflowNodes.reduce((s, n) => s + n.overflowVolume, 0);
-      const maxDepthRatio = Math.max(...nodeResults.map(n => n.depthRatio));
-
-      // Risk classification
-      let riskLevel = 'LOW';
-      if (maxDepthRatio > 1.8) riskLevel = 'EXTREME';
-      else if (maxDepthRatio > 1.4) riskLevel = 'HIGH';
-      else if (maxDepthRatio > 1.0) riskLevel = 'MODERATE';
-
+      const floodedNodes = nodes.filter((node) => node.depthCm >= 2);
+      const surchargingNodes = nodes.filter((node) => node.status === 'surcharging');
       this.results.push({
-        time: t,
-        rainfall: rainfall,
-        totalFlow: totalFlow,
-        peakFlow: totalFlow,
-        overflowNodes: overflowNodes,
-        overflowCount: overflowNodes.length,
-        totalOverflow: totalOverflow,
-        maxDepthRatio: maxDepthRatio,
-        riskLevel: riskLevel,
-        nodes: nodeResults,
-        drains: drainResults
+        time,
+        rainfall,
+        nodes,
+        drains,
+        floodedCount: floodedNodes.length,
+        surchargingCount: surchargingNodes.length,
+        maxDepthCm: Math.max(...nodes.map((node) => node.depthCm), 0),
+        maxUtilization: Math.max(
+          ...nodes.map((node) => node.capacityUtilization),
+          ...drains.map((drain) => drain.utilization),
+          0
+        )
       });
     }
 
     return this.results;
   }
+}
 
-  // Get water spread polygons around overflow nodes (simplified flood fill)
-  getWaterSpread(overflowNode, volume, dem) {
-    // Generate concentric circles expanding from overflow point
-    // Size proportional to overflow volume
-    const center = overflowNode.coords;
-    const radiusDeg = Math.min(0.002 + Math.sqrt(volume) * 0.0003, 0.008);
-    const points = 24;
-    const coords = [];
-    for (let i = 0; i <= points; i++) {
-      const angle = (i / points) * Math.PI * 2;
-      const r = radiusDeg * (0.7 + 0.3 * Math.sin(angle * 3)); // irregular shape
-      coords.push([
-        center[0] + Math.cos(angle) * r,
-        center[1] + Math.sin(angle) * r
-      ]);
-    }
-    return coords;
-  }
+if (typeof window !== 'undefined') {
+  window.FloodSimulator = FloodSimulator;
+}
+
+if (typeof module !== 'undefined') {
+  module.exports = { FloodSimulator };
 }
