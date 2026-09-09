@@ -1,4 +1,11 @@
 flask==3.0.0
 flask-cors==4.0.0
+fiona==1.9.6
+geopandas==0.14.4
+matplotlib==3.10.0
+networkx==3.4.2
 numpy==1.26.2
+pyproj==3.6.1
+pytest==8.3.5
+shapely==2.0.7
 scipy==1.11.4
