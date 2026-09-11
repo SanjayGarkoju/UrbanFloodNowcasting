@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Underground — Chennai</title>
+<script src="https://cesium.com/downloads/cesiumjs/releases/1.119/Build/Cesium/Cesium.js"></script>
+<link href="https://cesium.com/downloads/cesiumjs/releases/1.119/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#020208}#cesiumContainer{width:100%;height:100%}#bar{position:fixed;top:0;left:0;right:0;height:48px;z-index:10;background:rgba(9,9,11,0.92);backdrop-filter:blur(12px);border-bottom:1px solid rgba(255,255,255,0.08);display:flex;align-items:center;padding:0 14px;gap:10px;color:#e4e4e7;font:12px Geist,system-ui}#bar a{color:#38bdf8;text-decoration:none;font:11px JetBrains Mono}</style>
+</head>
+<body>
+<div id="cesiumContainer"></div>
+<div id="bar"><span style="font-weight:700;letter-spacing:0.08em">UNDERGROUND</span><span style="opacity:0.5">— 253 real + 760 inferred @ -10m</span><a href="/" style="margin-left:auto">← BACK</a></div>
+<script src="js/chennai-data.js"></script>
+<script>
+Cesium.Ion.defaultAccessToken=undefined;
+const viewer=new Cesium.Viewer('cesiumContainer',{terrainProvider:new Cesium.EllipsoidTerrainProvider(), baseLayer:new Cesium.ImageryLayer(new Cesium.UrlTemplateImageryProvider({url:'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', maximumLevel:16})), baseLayerPicker:false, geocoder:false, homeButton:false, sceneModePicker:false, navigationHelpButton:false, animation:false, timeline:false, fullscreenButton:false, vrButton:false, selectionIndicator:false, infoBox:false, shouldAnimate:true});
+viewer.scene.screenSpaceCameraController.enableCollisionDetection=false;
+viewer.scene.screenSpaceCameraController.minimumZoomDistance=10;
+viewer.scene.screenSpaceCameraController.maximumZoomDistance=8000;
+viewer.scene.globe.translucency.enabled=true;
+viewer.scene.globe.translucency.frontFaceAlpha=0.32;
+viewer.scene.globe.translucency.backFaceAlpha=0.32;
+viewer.scene.globe.depthTestAgainstTerrain=false;
+viewer.imageryLayers.get(0).alpha=0.88;
+function pipeColor(mm){ if(mm>=1200) return Cesium.Color.fromCssColorString('#0369a1'); if(mm>=700) return Cesium.Color.fromCssColorString('#0284c7'); if(mm>=350) return Cesium.Color.fromCssColorString('#0ea5e9'); return Cesium.Color.fromCssColorString('#60a5fa'); }
+function widthFor(mm){ if(mm>=1200) return 4; if(mm>=700) return 3; if(mm>=350) return 2; return 1; }
+function infColor(t){ if(t==='trunk/main') return Cesium.Color.fromCssColorString('#0284c7'); if(t==='secondary/collector') return Cesium.Color.fromCssColorString('#0ea5e9'); if(t==='local/branch') return Cesium.Color.fromCssColorString('#60a5fa'); return Cesium.Color.fromCssColorString('#93c5fd'); }
+function infWidth(t){ if(t==='trunk/main') return 4; if(t==='secondary/collector') return 3; if(t==='local/branch') return 2; return 1; }
+DRAINAGE_NETWORK.forEach(p=>{
+  const pts=p.coords.map(c=>Cesium.Cartesian3.fromDegrees(c[0],c[1],-10));
+  viewer.entities.add({polyline:{positions:pts, width:widthFor(p.mm), material:pipeColor(p.mm), depthFailMaterial:pipeColor(p.mm), clampToGround:false}});
+});
+if(typeof INFERRED_NETWORK!=='undefined'){
+  INFERRED_NETWORK.forEach(f=>{
+    const pos=f.coords.length===2?[Cesium.Cartesian3.fromDegrees(f.coords[0][0],f.coords[0][1],-10),Cesium.Cartesian3.fromDegrees(f.coords[1][0],f.coords[1][1],-10)]:f.coords.map(c=>Cesium.Cartesian3.fromDegrees(c[0],c[1],-10));
+    viewer.entities.add({polyline:{positions:pos, width:infWidth(f.sewer_type), material:infColor(f.sewer_type).withAlpha(0.85), depthFailMaterial:infColor(f.sewer_type).withAlpha(0.85), clampToGround:false}});
+  });
+}
+MANHOLES.slice(0,100).forEach(m=>{
+  const [lon,lat]=m.coords;
+  viewer.entities.add({polyline:{positions:[Cesium.Cartesian3.fromDegrees(lon,lat,0.2),Cesium.Cartesian3.fromDegrees(lon,lat,-10)], width:1.2, material:Cesium.Color.fromCssColorString('#22d3ee').withAlpha(0.85), depthFailMaterial:Cesium.Color.fromCssColorString('#22d3ee').withAlpha(0.85), clampToGround:false}});
+  viewer.entities.add({position:Cesium.Cartesian3.fromDegrees(lon,lat,0.3), point:{pixelSize:3, color:Cesium.Color.fromCssColorString('#38bdf8'), outlineColor:Cesium.Color.WHITE, outlineWidth:1}});
+});
+viewer.camera.flyTo({destination:Cesium.Cartesian3.fromDegrees(80.24,13.06,1200), orientation:{heading:0, pitch:Cesium.Math.toRadians(-55), roll:0}, duration:1});
+setTimeout(()=>{ viewer.camera.flyTo({destination:Cesium.Cartesian3.fromDegrees(80.24,13.06,-28), orientation:{heading:0, pitch:Cesium.Math.toRadians(18), roll:0}, duration:2}); },1300);
+</script>
+</body>
+</html>
